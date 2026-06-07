@@ -766,6 +766,98 @@ fn dock_row_of(harness: &EditorTestHarness, needle: &str) -> usize {
         .unwrap_or_else(|| panic!("screen missing '{needle}':\n{screen}"))
 }
 
+/// Keyboard-only counterpart of `dock_enter_attaches_discovered_worktree`:
+/// Tab focus onto a non-list dock control (here the "all worktrees"
+/// toggle), arrow Down onto the discovered row, then press Enter. The
+/// arrow should hand focus to the sessions list — picker-style arrow
+/// routing keeps focus on a Text input (filter), but for a Button or
+/// Toggle the user has clearly shifted intent to the scrollable, so the
+/// follow-up Enter has to activate the highlighted row.
+///
+/// Before the fix focus stayed on the toggle so Enter merely re-toggled
+/// "all worktrees" — the discovered worktree row was never attached,
+/// the dock just flickered hiding/showing the row. Mouse-click on the
+/// row already focused the list (`dock_enter_attaches_discovered_worktree`
+/// covers that path); this test pins down the keyboard equivalent.
+#[test]
+#[cfg_attr(target_os = "windows", ignore)] // attach spawns a Unix shell terminal.
+fn dock_arrow_after_toggle_focus_enter_attaches_discovered_worktree() {
+    if !pty_available() {
+        eprintln!("skipping: no PTY available in this environment");
+        return;
+    }
+    let (_temp, repo, _wt) = set_up_repo_with_worktree();
+    let mut harness = EditorTestHarness::with_working_dir(160, 50, repo.clone()).unwrap();
+    harness.tick_and_render().unwrap();
+    wait_for_command(&mut harness, "Orchestrator: Toggle Dock");
+
+    open_dock(&mut harness);
+
+    // Reveal the discovered on-disk worktree (Alt+T → "all worktrees"
+    // checked). Alt+T fires `dock_toggle_worktrees` and does *not*
+    // change panel focus, so focus is still on whatever the dock
+    // mounted with (the sessions list).
+    harness
+        .send_key(KeyCode::Char('t'), KeyModifiers::ALT)
+        .unwrap();
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("feature-x") && s.contains("· on-disk")
+        })
+        .unwrap_or_else(|_| {
+            panic!(
+                "dock should reveal the on-disk `feature-x` worktree after Alt+T.\n\
+                 Screen:\n{}",
+                harness.screen_to_string()
+            )
+        });
+
+    // Move keyboard focus off the sessions list onto a Toggle. The
+    // tabbable order leaving the sessions list is `filter → toggle…`,
+    // so Shift+Tab twice lands on the adjacent toggle. Stopping at
+    // the filter (a Text widget) would *not* trigger the bug — the
+    // picker-style arrow routing intentionally preserves Text focus so
+    // filter-then-arrow keeps the keyboard with the input — so the
+    // toggle is the case we need to pin down.
+    harness
+        .send_key(KeyCode::BackTab, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key(KeyCode::BackTab, KeyModifiers::NONE)
+        .unwrap();
+    harness.tick_and_render().unwrap();
+
+    // Arrow Down to navigate to the discovered row. Picker-style
+    // smart-key dispatch routes Down to the sessions list because the
+    // focused toggle has no meaningful Up/Down — and now also moves
+    // panel focus there, so Enter knows the user means the list.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.tick_and_render().unwrap();
+
+    // Activate the highlighted (discovered) row.
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Attach is async (`createWindowWithTerminal`). It opens a live
+    // session rooted at the worktree, so the dock's discovered row turns
+    // into a live `feature-x` row (no longer `· on-disk`).
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("feature-x") && !s.contains("· on-disk")
+        })
+        .unwrap_or_else(|_| {
+            panic!(
+                "Enter on the dock's discovered worktree row (after keyboard \
+                 nav through a focused toggle) should attach a live session \
+                 (row loses `· on-disk`).\nScreen:\n{}",
+                harness.screen_to_string()
+            )
+        });
+}
+
 /// Pressing Enter on a discovered (on-disk) worktree row in the *dock*
 /// attaches a managed session at that worktree — the same outcome the
 /// Open dialog produces. Before the fix the dock's Enter always blurred

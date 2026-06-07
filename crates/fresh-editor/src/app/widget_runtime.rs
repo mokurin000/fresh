@@ -362,6 +362,26 @@ impl Editor {
                         // widget in the panel. Lets a filter input
                         // stay focused for typing while arrows
                         // navigate the adjacent list.
+                        //
+                        // For a non-Text focused widget (Button,
+                        // Toggle, or no focus), also move panel focus
+                        // to the list/tree — the user has clearly
+                        // shifted intent to the scrollable, and a
+                        // follow-up Enter must activate the
+                        // highlighted row, not re-fire the toggle/
+                        // button Tab last landed on. (Mouse click on
+                        // a row already focuses the list this way;
+                        // keyboard nav now matches.) Text inputs are
+                        // exempt so type→arrow→type keeps working in
+                        // pickers that pair a filter with a list.
+                        //
+                        // If the plugin's `select` handler already
+                        // moved focus (e.g. the orchestrator modal
+                        // picker snapping back to Visit), respect that
+                        // — only flip focus to the scrollable when
+                        // nothing else touched it during the event.
+                        let focused_is_text =
+                            matches!(widget, Some(fresh_core::api::WidgetSpec::Text { .. }));
                         let scrollable = self
                             .widget_registry
                             .get(panel_id)
@@ -370,13 +390,19 @@ impl Editor {
                             let target_kind = self.widget_registry.get(panel_id).and_then(|p| {
                                 crate::widgets::find_widget_by_key(&p.spec, &target_key).cloned()
                             });
-                            match target_kind {
+                            let focus_before = self
+                                .widget_registry
+                                .focus_key(panel_id)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let dispatched = match target_kind {
                                 Some(fresh_core::api::WidgetSpec::List { .. }) => {
                                     self.handle_widget_select_move_for_key(
                                         panel_id,
                                         &target_key,
                                         delta,
                                     );
+                                    true
                                 }
                                 Some(fresh_core::api::WidgetSpec::Tree { .. }) => {
                                     self.handle_widget_tree_select_move_for_key(
@@ -384,8 +410,19 @@ impl Editor {
                                         &target_key,
                                         delta,
                                     );
+                                    true
                                 }
-                                _ => {}
+                                _ => false,
+                            };
+                            if dispatched && !focused_is_text {
+                                let focus_after = self
+                                    .widget_registry
+                                    .focus_key(panel_id)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_default();
+                                if focus_after == focus_before {
+                                    self.set_panel_focus_and_notify(panel_id, target_key.clone());
+                                }
                             }
                         }
                     }
